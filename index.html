@@ -1,0 +1,439 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>디지털 과학 탐구 실험실</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.js"></script>
+<style>
+:root{--p:#2563eb;--bg:#f1f5f9;--tx:#1e293b}
+*{box-sizing:border-box}
+body{font-family:Pretendard,-apple-system,'Malgun Gothic',sans-serif;background:var(--bg);color:var(--tx);margin:0;padding:12px;text-align:center}
+.screen{display:none;max-width:980px;margin:0 auto;background:#fff;padding:24px;border-radius:16px;box-shadow:0 4px 20px #0001}
+.screen.on{display:block}
+#s-dash{max-width:99vw}
+h1,h2{margin-top:0}.sub{color:#64748b;margin-bottom:16px;font-size:.95rem}
+button{background:var(--p);color:#fff;border:0;padding:12px 20px;font-size:1rem;font-weight:600;font-family:inherit;border-radius:10px;cursor:pointer;margin:5px}
+button:hover{filter:brightness(.92)}button.g{background:#64748b}
+.big{display:block;width:100%;max-width:560px;margin:10px auto;padding:18px;font-size:1.15rem}
+.big small{display:block;font-weight:400;opacity:.9;font-size:.85rem;margin-top:4px}
+.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(110px,1fr));gap:10px;margin:18px 0}
+.sens{display:flex;gap:12px;flex-wrap:wrap;justify-content:center;margin:14px 0}
+.card{flex:1;min-width:220px;background:#f8fafc;border:2px solid #e2e8f0;border-radius:14px;padding:14px}
+.card.ok{border-color:#10b981;background:#ecfdf5}
+.val{font-size:1.8rem;font-weight:800;margin:6px 0}
+.hint{font-size:.8rem;color:#b45309;margin-top:6px;text-align:left}
+.bar{display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:6px;margin-bottom:12px}
+#stats{font-size:.9rem;color:#475569;margin:8px 0;line-height:1.6;text-align:left}
+#log{margin-top:12px;padding:10px;background:#0f172a;color:#38bdf8;font:.8rem monospace;border-radius:8px;text-align:left;white-space:pre-wrap;max-height:150px;overflow:auto}
+#dgrid{display:grid;grid-template-columns:repeat(4,1fr);gap:12px}
+.dc{border:1px solid #e2e8f0;border-radius:12px;padding:8px;height:calc(50vh - 70px);min-height:230px;text-align:left}
+@media(max-width:700px){#dgrid{grid-template-columns:repeat(2,1fr)}}
+</style>
+</head>
+<body>
+<div id="s-topic" class="screen on"></div><div id="s-mode" class="screen"></div><div id="s-class" class="screen"></div>
+<div id="s-group" class="screen"></div><div id="s-measure" class="screen"></div><div id="s-dash" class="screen"></div>
+
+<script>
+/* =====================================================================
+   ★ 편집 영역 ① 기본 설정
+   ===================================================================== */
+const DEFAULT_CLASSES = 11;   // 끝반 번호
+const DEFAULT_GROUPS  = 7;    // 조 개수
+const APPS_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbyX9aGhuIHN8uJ6TM4SdkOEGqCOb9OplXtxkAEhZgFeKjEnCg5gFYX9uS5Mk9yqs5qnxA/exec";   // 앱스 스크립트 웹앱 주소(여러 기기 간 기록 공유). 비워두면 이 기기에만 저장
+const ADMIN_HASH = "286aee2ea4a5ba67539432dc5ea3865c3b204d3caaccb662995388d156a279cf"; // 편집자 암호의 해시
+
+/* =====================================================================
+   ★ 편집 영역 ② 센서 목록 — 새 센서는 한 줄만 추가
+   min,max: 그래프 기본 세로축 / 예상 그래프 기본 범위(데이터가 벗어나면 자동 확장)
+   valid: 정상 측정값 범위(이 밖의 값은 무시)
+   ===================================================================== */
+const SENSORS = {
+  o2:   {name:'산소(O₂)',        icon:'🔵', unit:'%',   color:'#2563eb', decimals:2, min:18,  max:23,   valid:[0,100]},
+  co2:  {name:'이산화탄소(CO₂)', icon:'🔴', unit:'ppm', color:'#e11d48', decimals:0, min:400, max:2000, valid:[0,60000]},
+  temp: {name:'온도',            icon:'🌡️', unit:'°C',  color:'#ea580c', decimals:1, min:0,   max:100,  valid:[-60,400]},
+  volt: {name:'전압',            icon:'⚡', unit:'V',   color:'#ca8a04', decimals:3, min:0,   max:6,    valid:[-100,100]},
+  curr: {name:'전류',            icon:'🔌', unit:'A',   color:'#7c3aed', decimals:3, min:0,   max:1,    valid:[-50,50]},
+  force:{name:'힘',              icon:'💪', unit:'N',   color:'#0d9488', decimals:2, min:0,   max:10,   valid:[-500,500]},
+  pres: {name:'대기압',          icon:'🌀', unit:'hPa', color:'#0891b2', decimals:1, min:950, max:1050, valid:[300,1200]},
+  lux:  {name:'조도',            icon:'💡', unit:'lx',  color:'#d97706', decimals:0, min:0,   max:1000, valid:[0,200000]},
+  cct:  {name:'색온도',          icon:'🎨', unit:'K',   color:'#db2777', decimals:0, min:2000,max:8000, valid:[0,20000]},
+};
+
+/* =====================================================================
+   ★ 편집 영역 ③ 실험 목록 — 블록을 복사해 붙여넣고 고치세요
+   modes[].sensors: 위 센서 id / modes[].xy: 두 센서의 XY 그래프(ohm:true 면 저항 계산)
+   ===================================================================== */
+const EXPERIMENTS = [
+  {id:'gas', icon:'🫁', title:'산소·이산화탄소 농도 측정', color:'#2563eb', desc:'기체 농도 변화를 실시간 그래프로 관찰',
+   question:'시간이 지남에 따라 기체의 농도는 어떻게 변할까?',
+   modes:[{id:'o2',title:'산소 농도만 측정하기',sensors:['o2']},
+          {id:'co2',title:'이산화탄소 농도만 측정하기',sensors:['co2']},
+          {id:'both',title:'산소·이산화탄소 농도 함께 측정하기',sensors:['o2','co2']}]},
+  {id:'temp', icon:'🌡️', title:'온도 변화 측정', color:'#ea580c', desc:'가열·냉각, 열의 이동',
+   modes:[{id:'t',title:'온도 측정',sensors:['temp']}]},
+  {id:'elec', icon:'⚡', title:'전류·전압 측정', color:'#ca8a04', desc:'회로에서 전압과 전류 관찰 (옴의 법칙)',
+   modes:[{id:'v',title:'전압만 측정하기',sensors:['volt']},
+          {id:'i',title:'전류만 측정하기',sensors:['curr']},
+          {id:'vi',title:'전압·전류 함께 측정하기 (V-I 그래프)',sensors:['volt','curr'],xy:{x:'volt',y:'curr',ohm:true}}]},
+  {id:'force', icon:'💪', title:'힘 측정', color:'#0d9488', desc:'당기는 힘, 누르는 힘의 변화',
+   modes:[{id:'f',title:'힘 측정',sensors:['force']}]},
+  {id:'atm', icon:'🌀', title:'대기압·온도 측정', color:'#0891b2', desc:'기압과 온도 함께 관찰',
+   modes:[{id:'p',title:'대기압·온도 함께 측정',sensors:['pres','temp']}]},
+  {id:'light', icon:'💡', title:'조도·색온도 측정', color:'#db2777', desc:'빛의 세기와 색 관찰',
+   modes:[{id:'l',title:'조도·색온도 함께 측정',sensors:['lux','cct']}]},
+];
+
+/* =====================================================================
+   아래는 수정할 필요 없는 영역
+   ===================================================================== */
+const $=id=>document.getElementById(id), sleep=ms=>new Promise(r=>setTimeout(r,ms));
+const LS=(k,v)=>{try{return v===undefined?localStorage.getItem(k):localStorage.setItem(k,v)}catch(e){return null}};
+const PAL=['#2563eb','#e11d48','#16a34a','#ea580c','#7c3aed','#0891b2','#ca8a04','#db2777','#475569','#65a30d'];
+const Q=new URLSearchParams(location.search);
+const S={exp:null,mode:null,pc:+Q.get('c')||0,pg:+Q.get('g')||0,cls:+Q.get('c')||0,grp:+Q.get('g')||0,nC:+LS('nC')||DEFAULT_CLASSES,nG:+LS('nG')||DEFAULT_GROUPS};
+S.fixed=!!(S.pc&&S.pg);   // 주소 뒤에 ?g=3 (조 고정) / ?c=2 (반 고정) / ?c=2&g=3 (둘 다 고정)을 붙이면 해당 선택 화면을 건너뜀(QR코드용)
+const show=id=>{document.querySelectorAll('.screen').forEach(e=>e.classList.remove('on'));$(id).classList.add('on')};
+const key=()=>`${S.exp.id}-${S.mode.id}`;
+let rows=[],markers=[],hyp={},hypXY=[],timer=null,chart=null,xc=null,dt=2,lastTick=0,lastUp=0;
+
+/* ---------- 화면 이동 (모든 화면에 ← 뒤로 / 🏠 처음으로) ---------- */
+const nav=(back,extra='')=>`<div class="bar"><span><button class="g" onclick="${back}">← 뒤로</button><button class="g" onclick="goHome()">🏠 처음으로</button></span>${extra}</div>`;
+const lose=()=>!rows.length||confirm('제출하지 않은 측정 기록이 사라져요. 계속할까요?');
+function goHome(){if(!lose())return;stopRec();rows=[];markers=[];hyp={};hypXY=[];home()}
+const back=()=>{if(!lose())return;stopRec();rows=[];markers=[];hyp={};hypXY=[];S.fixed?home():S.pg?showClasses():showGroups()};
+function home(){
+  $('s-topic').innerHTML=`<h1>🔬 디지털 과학 탐구 실험실</h1><p class="sub">오늘 진행할 실험을 선택하세요${S.pc||S.pg?` (${[S.pc&&S.pc+'반',S.pg&&S.pg+'조'].filter(Boolean).join(' ')})`:''}</p>`
+   +EXPERIMENTS.map((e,i)=>`<button class="big" style="background:${e.color}" onclick="pickExp(${i})">${e.icon} ${e.title}<small>${e.desc||''}</small></button>`).join('')
+   +`<button class="g" onclick="admin()">⚙️ 편집자 모드</button>`;
+  show('s-topic');
+}
+function pickExp(i){
+  S.exp=EXPERIMENTS[i];
+  if(S.exp.modes.length==1)return pickMode(0);
+  $('s-mode').innerHTML=nav('goHome()')+`<h2>${S.exp.icon} ${S.exp.title}</h2><p class="sub">어떻게 측정할까요?</p>`
+   +S.exp.modes.map((m,j)=>`<button class="big" style="background:${S.exp.color}" onclick="pickMode(${j})">${m.title}</button>`).join('');
+  show('s-mode');
+}
+function pickMode(j){S.mode=S.exp.modes[j];S.fixed?measure():S.pc?showGroups():showClasses()}
+function pick(id,title,backFn,n,cb,extra=''){
+  $(id).innerHTML=nav(backFn,extra)+`<h2>${title}</h2><div class="grid">`
+   +Array.from({length:n},(_,i)=>`<button onclick="${cb}(${i+1})">${i+1}${cb=='setC'?'반':'조'}</button>`).join('')+`</div>`;
+  show(id);
+}
+const showClasses=()=>pick('s-class',`[${S.mode.title}] 본인이 속한 반을 선택하세요`,S.exp.modes.length>1?'pickExp(EXPERIMENTS.indexOf(S.exp))':'goHome()',S.nC,'setC');
+const setC=n=>{S.cls=n;if(S.pg){S.grp=S.pg;measure()}else showGroups()};
+const showGroups=()=>pick('s-group',`${S.cls}반 · 본인이 속한 조를 선택하세요`,'showClasses()',S.nG,'setG',`<button style="background:#0f172a" onclick="dash('s-group')">🖥️ 우리 반 전체 조 보기</button>`);
+const setG=n=>{S.grp=n;measure()};
+
+async function sha(s){const b=await crypto.subtle.digest('SHA-256',new TextEncoder().encode(s));return[...new Uint8Array(b)].map(x=>x.toString(16).padStart(2,'0')).join('')}
+async function admin(){
+  const p=prompt('편집자 암호를 입력하세요');if(!p)return;
+  try{if(await sha(p)!==ADMIN_HASH)return alert('암호가 틀렸어요.')}catch(e){return alert('https 주소에서만 편집자 모드를 쓸 수 있어요.')}
+  const c=+prompt('끝반 번호(반 개수)',S.nC),g=+prompt('조 개수',S.nG);
+  if(c>0&&g>0){S.nC=c;S.nG=g;LS('nC',c);LS('nG',g);alert(`저장: 1~${c}반 / 1~${g}조\n(이 기기에만 적용됩니다. 모든 기기에 적용하려면 코드 위쪽 DEFAULT_CLASSES / DEFAULT_GROUPS 를 고치세요)`)}
+}
+
+/* ---------- 블루투스(사이언스큐브) ---------- */
+const SC={svc:'49535343-fe7d-4ae5-8fa9-9fafd205e455',nt:'49535343-1e4d-4bd9-ba61-23c647249616',wr:'49535343-8841-43f4-a8d4-ecbe34729bb3'};
+// 공식 사이트(on.sciencecube.com)에서 실제로 캡처한 명령. 가운데 'A'가 12개인 점이 중요합니다.
+const fr=(h,t)=>new TextEncoder().encode('{{'+h+'A'.repeat(12)+'B'+t+'}}');
+const INIT=fr('Tg','O'), READ=fr('Uw','T');   // {{TgAAAAAAAAAAAABO}}, {{UwAAAAAAAAAAAABT}}
+const conns={}, live={};
+function log(m){const e=$('log');if(e)e.textContent=(new Date().toLocaleTimeString()+' '+m+'\n'+e.textContent).slice(0,3500)}
+/* 패킷: {{ + 16글자 + }} (20바이트). 앞 15글자가 base64 데이터, 마지막 1글자는 체크섬.
+   'd…' = 읽기(READ) 응답: 값은 4번째 바이트부터 float32(LE)   /  'b…' = 연속 측정 패킷: 값은 2번째 바이트부터 float32(LE)
+   (산소 센서로 확인함. 다른 센서는 같은 형식을 가정하고 정수형도 시도합니다) */
+function decode(f,id){
+  try{
+    const b=Uint8Array.from(atob(f.slice(2,17)),c=>c.charCodeAt(0)),dv=new DataView(b.buffer),t=f[2];
+    if(t=='b'&&f[3]=='g')return{k:'serial'};
+    const[lo,hi]=SENSORS[id].valid||[-1e9,1e9],ok=v=>isFinite(v)&&v>=lo&&v<=hi&&(v==0||Math.abs(v)>1e-3);
+    const c=t=='d'?[[4,'f'],[2,'f'],[4,'u']]:t=='b'?[[2,'f'],[4,'f'],[2,'u']]:[];
+    for(const[o,k]of c){
+      if(o+(k=='f'?4:2)>b.length)continue;
+      const v=k=='f'?dv.getFloat32(o,true):dv.getUint16(o,true);
+      if(ok(v))return{k:'data',v:+v.toFixed(SENSORS[id].decimals)};
+    }
+    return{k:'?',b:[...b]};
+  }catch(e){return{k:'?'}}
+}
+async function pair(id){
+  if(!navigator.bluetooth)return alert('이 브라우저는 블루투스를 지원하지 않아요.\n크롬(Chrome) 브라우저로 열어 주세요.');
+  const V=t=>{const e=$('v-'+id);if(e)e.textContent=t},H=t=>{const e=$('h-'+id);if(e)e.textContent=t};
+  try{
+    const o={optionalServices:[SC.svc]};
+    if($('all')&&$('all').checked)o.acceptAllDevices=true;
+    else o.filters=[{namePrefix:'SC'},{namePrefix:'Smart'},{namePrefix:'KD'},{namePrefix:'Science'},{services:[SC.svc]}];
+    const dev=await navigator.bluetooth.requestDevice(o);
+    if(conns[id])conns[id].stop();
+    H('');V('연결 중...');log(`${dev.name} 연결 중...`);
+    let srv;for(let i=0;i<3;i++){try{srv=await dev.gatt.connect();break}catch(e){log('재시도 '+(i+1));if(i==2)throw e;await sleep(700)}}
+    V('서비스 찾는 중...');
+    const svc=await srv.getPrimaryService(SC.svc),nt=await svc.getCharacteristic(SC.nt),wr=await svc.getCharacteristic(SC.wr);
+    let step=0,buf='',n=0,heard=0,last=0,got=0;
+    const send=async(b,noResp)=>{try{if(noResp&&wr.writeValueWithoutResponse)await wr.writeValueWithoutResponse(b);else await(wr.writeValueWithResponse?wr.writeValueWithResponse(b):wr.writeValue(b))}catch(e){log('전송 오류: '+e.message)}};
+    const onNote=e=>{
+      heard++;last=Date.now();const d=e.target.value;let c='';
+      for(let i=0;i<d.byteLength;i++)c+=String.fromCharCode(d.getUint8(i));
+      if(heard<=3)log('📥 '+c);
+      buf+=c;
+      for(;;){   // 20글자짜리 패킷 단위로 자르기
+        const i=buf.indexOf('{{');if(i<0){buf=buf.slice(-1);break}
+        if(buf.length-i<20)break;
+        const f=buf.slice(i,i+20);
+        if(f.slice(18)!='}}'){buf=buf.slice(i+2);continue}
+        buf=buf.slice(i+20);
+        const r=decode(f,id);
+        if(r.k=='serial'&&!step){step=1;log('센서 인식 완료 '+f);setTimeout(()=>send(READ,false),150)}
+        else if(r.k=='data'){
+          if(got++<5)log('✅ 측정값 '+r.v+'  ← 원본 '+f);
+          step=2;live[id]=r.v;V(r.v+' '+SENSORS[id].unit);H('');const cd=$('c-'+id);if(cd)cd.classList.add('ok');
+          if(f[2]=='d')setTimeout(()=>send(READ,false),120);   // 공식 사이트처럼 응답을 받으면 곧바로 다음 읽기 요청
+        }else if(r.k!='serial')log('수신 '+f+(r.b?' / 해석불가 '+r.b:''));
+      }
+    };
+    log(`통로: 알림[${Object.keys(nt.properties).filter(k=>nt.properties[k])}] 쓰기[${Object.keys(wr.properties).filter(k=>wr.properties[k])}]`);
+    nt.addEventListener('characteristicvaluechanged',onNote);
+    await nt.startNotifications();
+    V('센서 깨우는 중...');send(INIT,false);
+    const poll=setInterval(()=>{
+      n++;
+      if(Date.now()-last>900)send(step?READ:INIT,!step&&n%2==0);   // 응답이 끊기면 다시 요청(번갈아 쓰기 방식도 시도)
+      if(live[id]==null){
+        V(`센서 깨우는 중... ${n}초`);
+        if(n==8)H(heard?'센서는 응답하지만 값이 오지 않아요. 아래 검은 창 내용을 선생님께 보여 주세요.':'센서 응답이 없어요. ① 센서 전원을 껐다 켠 뒤 다시 연결 ② 다른 창·앱에서 이 센서를 연결 중이면 끊기 ③ 윈도우 설정>블루투스에 센서가 등록돼 있으면 [장치 제거] 후 재연결');
+      }
+    },1000);
+    dev.addEventListener('gattserverdisconnected',()=>{
+      if(!conns[id]||conns[id].dev!==dev)return;
+      clearInterval(poll);live[id]=null;V('연결 끊김 (다시 연결)');const cd=$('c-'+id);if(cd)cd.classList.remove('ok');log(SENSORS[id].name+' 연결이 끊어졌어요');
+    });
+    conns[id]={dev,stop:()=>{clearInterval(poll);if(dev.gatt.connected)dev.gatt.disconnect()}};
+  }catch(e){
+    log('연결 실패: '+e.name+' - '+e.message);V('연결 대기');
+    alert(e.name=='NotFoundError'?'선택된 기기가 없어요.\n① 센서 전원이 켜져 있는지 ② "센서가 목록에 안 보이면 체크"를 켜 보세요.':'블루투스 연결 실패: '+e.message);
+  }
+}
+
+/* ---------- 그래프 ---------- */
+const mkP={id:'mk',afterDatasetsDraw(c){
+  const m=c.$mk;if(!m||!m.length)return;const{ctx,chartArea:a,scales:{x}}=c;
+  ctx.save();ctx.setLineDash([4,4]);ctx.strokeStyle='#64748b';ctx.fillStyle='#334155';ctx.font='12px sans-serif';
+  m.forEach((k,i)=>{const px=x.getPixelForValue(k.t);if(px<a.left||px>a.right)return;ctx.beginPath();ctx.moveTo(px,a.top);ctx.lineTo(px,a.bottom);ctx.stroke();ctx.fillText('📍'+k.label,px+3,a.top+12+(i%3)*14)});
+  ctx.restore()}};
+function mkChart(cv,ids,small){
+  const sc={x:{type:'linear',min:0,title:{display:!small,text:'시간 (초)',font:{weight:'bold'}}}};
+  ids.forEach((id,i)=>{const s=SENSORS[id];sc['y'+id]={type:'linear',position:i%2?'right':'left',suggestedMin:s.min,suggestedMax:s.max,grid:{drawOnChartArea:i==0},title:{display:true,text:`${s.name} (${s.unit})`,color:s.color,font:{weight:'bold',size:small?10:14}}}});
+  const ds=ids.map(id=>({label:`${SENSORS[id].name} (${SENSORS[id].unit})`,showLine:true,borderColor:SENSORS[id].color,backgroundColor:SENSORS[id].color,yAxisID:'y'+id,data:[],tension:.2,spanGaps:true,pointRadius:small?1.5:3}))
+   .concat(ids.map(id=>({label:'예상: '+SENSORS[id].name,showLine:true,borderColor:SENSORS[id].color+'99',backgroundColor:SENSORS[id].color+'99',borderDash:[6,4],pointRadius:0,yAxisID:'y'+id,data:[]})));
+  const c=new Chart(cv,{type:'scatter',data:{datasets:ds},plugins:[mkP],options:{responsive:true,maintainAspectRatio:false,animation:false,plugins:{legend:{labels:{boxWidth:10,filter:i=>!small||i.datasetIndex<ids.length}}},scales:sc}});
+  c.$mk=[];return c;
+}
+function fill(c,p,ids){
+  ids.forEach((id,i)=>{
+    c.data.datasets[i].data=(p.t||[]).map((t,j)=>({x:t,y:(p.d[id]||[])[j]}));
+    c.data.datasets[ids.length+i].data=((p.hyp||{})[id]||[]).map(q=>({x:q[0],y:q[1]}));
+  });
+  c.$mk=p.mk||[];c.update();
+}
+function cur(n=1e9){
+  let r=rows;if(r.length>n){const k=Math.ceil(r.length/n);r=r.filter((_,i)=>i%k==0)}
+  return{t:r.map(x=>x.t),d:Object.fromEntries(S.mode.sensors.map(id=>[id,r.map(x=>x.v[id]??null)])),mk:markers,hxy:hypXY.map(q=>[+q[0].toFixed(3),+q[1].toFixed(3)]),
+    hyp:Object.fromEntries(Object.entries(hyp).map(([id,p])=>[id,p.map(q=>[+q[0].toFixed(1),+q[1].toFixed(3)])]))};
+}
+
+/* ---------- 측정 화면 ---------- */
+function measure(){
+  stopRec();rows=[];markers=[];hyp={};hypXY=[];const e=S.exp,m=S.mode,ids=m.sensors;
+  Object.keys(conns).forEach(k=>{if(!ids.includes(k)){conns[k].stop();delete conns[k];live[k]=null}});
+  $('s-measure').innerHTML=nav('back()',`<button style="background:#0f172a" onclick="dash('s-measure')">📊 우리 반 전체 조 보기</button>`)+`
+  <h2>${S.cls}반 ${S.grp}조 · ${e.icon} ${e.title}</h2>
+  <div class="sub"><b>${m.title}</b>${e.question?`<br>💭 ${e.question}`:''}</div>
+  <div class="sens">${ids.map(id=>{const s=SENSORS[id];return `<div class="card" id="c-${id}"><b>${s.icon} ${s.name} 센서</b><div class="val" id="v-${id}" style="color:${s.color}">${live[id]!=null?live[id]+' '+s.unit:'연결 대기'}</div><button style="background:${s.color}" onclick="pair('${id}')">블루투스 연결</button><div class="hint" id="h-${id}"></div></div>`}).join('')}</div>
+  <label style="font-size:.9rem"><input type="checkbox" id="all"> 센서가 목록에 안 보이면 체크 (모든 블루투스 기기 보기)</label>
+  <div style="margin:12px 0">측정 간격 <select id="dt" style="font-size:1rem;padding:6px"><option value="1">1초<option value="2" selected>2초<option value="5">5초<option value="10">10초</select>
+   <button id="go" style="background:#16a34a" onclick="rec()">▶ 측정 시작</button>
+   <button id="stop" style="background:#dc2626;display:none" onclick="stopBtn()">⏹ 정지</button>
+   <button class="g" onclick="reset()">🔄 초기화</button><br>
+   <button style="background:#0891b2" onclick="mark()">📍 시점 표시</button>
+   <button style="background:#f59e0b" onclick="$('hp').style.display=$('hp').style.display=='none'?'':'none'">✏️ 예상 그래프 그리기</button>
+   ${m.xy?`<button style="background:#9333ea" onclick="toggleXY()">📈 ${SENSORS[m.xy.x].name}-${SENSORS[m.xy.y].name} 그래프 ↔ 시간 그래프</button>`:''}
+   <button style="background:#0d9488" onclick="csv()">💾 CSV 저장</button>
+   <button style="background:#7c3aed" onclick="submit()">📤 우리 조 기록 제출</button></div>
+  <div id="hp" class="card" style="display:none;margin-bottom:10px;text-align:left"><b>✏️ 예상 그래프 그리기</b> <small>① 가로축 시간·세로축 범위 정하기 → ② [그리기]를 누르고 그래프 위에 손가락으로 예상 모양 그리기 → ③ 측정하고 비교하기</small><br>
+   가로축 시간 <input id="hT" type="number" value="120" style="width:70px">초 <small>(시간 그래프용)</small>
+   ${m.xy?`<div style="margin:8px 0;padding:8px;background:#fffbeb;border-radius:8px">📈 <b>${SENSORS[m.xy.x].name}-${SENSORS[m.xy.y].name} 그래프</b> (가로 ${SENSORS[m.xy.x].name}, 세로 ${SENSORS[m.xy.y].name} · 아래 범위 값 사용) <button style="background:#f59e0b;padding:6px 12px" onclick="hdrawXY()">✏️ 그리기</button><button class="g" style="padding:6px 12px" onclick="hclearXY()">🗑️</button></div>`:''}
+   ${ids.map(id=>{const s=SENSORS[id];return `<div style="margin:6px 0">${s.icon} ${s.name} 세로축 <input id="hl-${id}" type="number" value="${s.min??0}" style="width:70px"> ~ <input id="hh-${id}" type="number" value="${s.max??100}" style="width:70px"> ${s.unit} <button style="background:${s.color};padding:6px 12px" onclick="hdraw('${id}')">✏️ 그리기</button><button class="g" style="padding:6px 12px" onclick="hclear('${id}')">🗑️</button></div>`}).join('')}</div>
+  <div id="cw" style="position:relative"><div id="tw" style="height:360px;position:relative"><canvas id="cv"></canvas></div>
+  <div id="xw" style="display:none"><div style="height:360px;position:relative"><canvas id="xc"></canvas></div><div id="xt" style="font-weight:700;margin-top:8px"></div></div><canvas id="ov" style="position:absolute;display:none;touch-action:none;cursor:crosshair"></canvas></div>
+  <div id="stats"></div>
+  <div style="text-align:right"><button class="g" style="padding:4px 10px;font-size:.8rem" onclick="navigator.clipboard.writeText($('log').textContent).then(()=>alert('로그가 복사됐어요'))">📋 로그 복사</button></div><div id="log">📡 센서 통신 상태: 대기 중...</div>`;
+  show('s-measure');
+  ids.forEach(id=>{if(live[id]!=null)$('c-'+id).classList.add('ok')});
+  chart=mkChart($('cv'),ids);xc=m.xy?mkXY($('xc'),m.xy.x,m.xy.y):null;bindDraw();if(m.xy)toggleXY();
+}
+function rec(){
+  if(!S.mode.sensors.some(i=>live[i]!=null))return alert('아직 센서 값이 들어오지 않았어요.\n아래 검은 상태창을 확인해 주세요!');
+  if(timer)return;
+  dt=+$('dt').value;$('dt').disabled=true;$('go').style.display='none';$('stop').style.display='';
+  tick();timer=setInterval(tick,dt*1000);
+}
+function tick(){
+  lastTick=Date.now();rows.push({t:+(rows.length*dt).toFixed(1),v:{...live}});
+  fill(chart,cur(),S.mode.sensors);stats();xyUpd();
+  if(APPS_SCRIPT_URL&&Date.now()-lastUp>10000){lastUp=Date.now();upload(true)}   // 측정 중 10초마다 자동 공유
+}
+function stopRec(){clearInterval(timer);timer=null;if($('go')){$('go').style.display='';$('stop').style.display='none'}}
+function stopBtn(){stopRec();if(APPS_SCRIPT_URL&&rows.length)upload(true)}
+function reset(){stopRec();rows=[];markers=[];$('dt').disabled=false;fill(chart,cur(),S.mode.sensors);stats();xyUpd()}
+function mark(){
+  if(!rows.length)return alert('측정을 시작한 뒤에 시점을 표시할 수 있어요.');
+  const t=+(rows[rows.length-1].t+(timer?(Date.now()-lastTick)/1000:0)).toFixed(1),l=prompt('무슨 일이 있었나요? (예: 입김 불어넣음)');
+  if(!l)return;markers.push({t,label:l});fill(chart,cur(),S.mode.sensors);stats();
+}
+function stats(){
+  $('stats').innerHTML=S.mode.sensors.map(id=>{
+    const s=SENSORS[id],a=rows.map(r=>r.v[id]).filter(x=>x!=null);if(!a.length)return'';
+    const f=x=>x.toFixed(s.decimals),T=rows[rows.length-1].t,sl=T>0?(a[a.length-1]-a[0])/T:0;
+    return `<span style="color:${s.color}">${s.icon} ${s.name}: 최소 ${f(Math.min(...a))} · 최대 ${f(Math.max(...a))} · 평균 ${f(a.reduce((p,c)=>p+c)/a.length)} ${s.unit} · 평균 변화율 ${sl.toFixed(s.decimals+1)} ${s.unit}/초</span>`}).join('<br>')
+   +(markers.length?'<br>'+markers.map(k=>`📍 ${k.t}초: ${k.label}`).join(' · '):'');
+}
+function csv(){
+  if(!rows.length)return alert('저장할 기록이 없어요.');
+  const ids=S.mode.sensors,h=['시간(초)',...ids.map(i=>`${SENSORS[i].name}(${SENSORS[i].unit})`)].join(','),
+        b=rows.map(r=>[r.t,...ids.map(i=>r.v[i]??'')].join(',')).join('\n'),
+        mk=markers.length?'\n\n시점 표시(초),내용\n'+markers.map(k=>`${k.t},"${k.label.replace(/"/g,'""')}"`).join('\n'):'',
+        a=document.createElement('a');
+  a.href=URL.createObjectURL(new Blob(['\ufeff'+h+'\n'+b+mk],{type:'text/csv'}));a.download=`${S.cls}반${S.grp}조_${S.exp.id}_${S.mode.id}.csv`;a.click();
+}
+async function upload(silent){
+  let p;for(const n of [1500,800,400,200]){p=cur(n);if(JSON.stringify(p).length<45000)break}
+  const k=`sc_${key()}-${S.cls}`,d=JSON.parse(LS(k)||'{}');d[S.grp]=p;LS(k,JSON.stringify(d));
+  if(!APPS_SCRIPT_URL){if(!silent)alert('이 기기에 저장되었어요.');return}
+  try{await fetch(APPS_SCRIPT_URL,{method:'POST',body:JSON.stringify({action:'submitData',topic:key(),classNum:S.cls,groupNum:S.grp,data:p})});if(!silent)alert(`${S.cls}반 ${S.grp}조 기록이 제출되었어요!`)}
+  catch(e){if(!silent)alert('이 기기에는 저장됐지만 서버 전송에 실패했어요. 인터넷 연결과 앱스 스크립트 주소를 확인하세요.')}
+}
+const submit=()=>rows.length?upload(false):alert('제출할 측정 기록이 없어요. 먼저 측정을 시작해 주세요!');
+
+/* ---------- 예상(가설) 그래프 (시간 그래프·XY 그래프 공용) ---------- */
+let D=null,pts=[];
+function bindDraw(){
+  const o=$('ov'),g=o.getContext('2d'),P=e=>{const r=o.getBoundingClientRect();return[e.clientX-r.left,e.clientY-r.top]};
+  o.onpointerdown=e=>{if(!D)return;o.setPointerCapture(e.pointerId);pts=[P(e)]};
+  o.onpointermove=e=>{if(!D||!pts.length)return;const p=P(e),l=pts[pts.length-1];pts.push(p);g.strokeStyle=D.col;g.lineWidth=3;g.beginPath();g.moveTo(l[0],l[1]);g.lineTo(p[0],p[1]);g.stroke()};
+  o.onpointerup=()=>{if(D&&pts.length>1)endDraw()};
+}
+function startDraw(c,cv,ysId,xlo,xhi,ylo,yhi,col,done){
+  if(!(xhi>xlo&&yhi>ylo))return alert('최댓값이 최솟값보다 커야 해요.');
+  const so=c.options.scales;so.x.min=xlo;so.x.max=xhi;so[ysId].min=ylo;so[ysId].max=yhi;c.update('none');
+  const o=$('ov'),r=cv.getBoundingClientRect(),q=$('cw').getBoundingClientRect();
+  o.style.left=(r.left-q.left)+'px';o.style.top=(r.top-q.top)+'px';o.style.display='block';o.width=r.width;o.height=r.height;
+  D={c,ysId,xlo,xhi,ylo,yhi,col,done};pts=[];
+}
+function endDraw(){
+  const{c,ysId,xlo,xhi,ylo,yhi,done}=D,xs=c.scales.x,ys=c.scales[ysId],a=c.chartArea,B=30,bins=Array.from({length:B+1},()=>[]);
+  pts.forEach(([px,py])=>{if(px<a.left||px>a.right||py<a.top||py>a.bottom)return;const x=xs.getValueForPixel(px);bins[Math.max(0,Math.min(B,Math.round((x-xlo)/(xhi-xlo)*B)))].push([x,ys.getValueForPixel(py)])});
+  const out=bins.filter(b=>b.length).map(b=>[b.reduce((s,p)=>s+p[0],0)/b.length,b.reduce((s,p)=>s+p[1],0)/b.length]);
+  const so=c.options.scales;so.x.min=undefined;so.x.max=undefined;so.x.suggestedMin=xlo;so.x.suggestedMax=xhi;
+  so[ysId].min=undefined;so[ysId].max=undefined;so[ysId].suggestedMin=ylo;so[ysId].suggestedMax=yhi;
+  $('ov').style.display='none';D=null;pts=[];
+  if(out.length<3){c.update('none');return alert('조금 더 길게 그려 주세요.')}
+  done(out);
+}
+function hdraw(id){
+  if($('tw').style.display=='none')toggleXY();
+  startDraw(chart,$('cv'),'y'+id,0,+$('hT').value||120,+$('hl-'+id).value,+$('hh-'+id).value,SENSORS[id].color,out=>{hyp[id]=out;fill(chart,cur(),S.mode.sensors)});
+}
+const hclear=id=>{delete hyp[id];fill(chart,cur(),S.mode.sensors)};
+function hdrawXY(){
+  const m=S.mode.xy;if($('xw').style.display=='none')toggleXY();
+  startDraw(xc,$('xc'),'y',+$('hl-'+m.x).value,+$('hh-'+m.x).value,+$('hl-'+m.y).value,+$('hh-'+m.y).value,'#f59e0b',out=>{hypXY=out;xyUpd()});
+}
+const hclearXY=()=>{hypXY=[];xyUpd()};
+
+/* ---------- XY 그래프(예: 전압-전류) ---------- */
+function mkXY(cv,x,y,small){
+  const X=SENSORS[x],Y=SENSORS[y],ax=t=>({type:'linear',title:{display:true,text:t,font:{weight:'bold',size:small?10:14}}});
+  return new Chart(cv,{type:'scatter',data:{datasets:[
+    {label:'측정값',data:[],backgroundColor:Y.color,pointRadius:small?2:4},
+    {label:'추세선',data:[],showLine:true,borderColor:'#0f172a',borderDash:[5,4],pointRadius:0},
+    {label:'예상',data:[],showLine:true,borderColor:'#f59e0b',borderDash:[6,4],pointRadius:0}]},
+    options:{responsive:true,maintainAspectRatio:false,animation:false,plugins:{legend:{labels:{boxWidth:10}}},
+      scales:{x:{...ax(`${X.name} (${X.unit})`),suggestedMin:X.min,suggestedMax:X.max},y:{...ax(`${Y.name} (${Y.unit})`),suggestedMin:Y.min,suggestedMax:Y.max}}}});
+}
+function reg(P){
+  if(P.length<2)return null;
+  const n=P.length,sx=P.reduce((a,p)=>a+p.x,0),sy=P.reduce((a,p)=>a+p.y,0),sxy=P.reduce((a,p)=>a+p.x*p.y,0),sxx=P.reduce((a,p)=>a+p.x*p.x,0),d=n*sxx-sx*sx;
+  if(!(d>0))return null;
+  const k=(n*sxy-sx*sy)/d,xs=P.map(p=>p.x);return{k,b:(sy-k*sx)/n,x0:Math.min(...xs),x1:Math.max(...xs)};
+}
+const xyPts=(p,m)=>(p.t||[]).map((_,j)=>({x:(p.d[m.x]||[])[j],y:(p.d[m.y]||[])[j]})).filter(q=>q.x!=null&&q.y!=null);
+function fillXY(c,p,m){
+  const P=xyPts(p,m),r=reg(P);
+  c.data.datasets[0].data=P;
+  c.data.datasets[1].data=r?[{x:r.x0,y:r.k*r.x0+r.b},{x:r.x1,y:r.k*r.x1+r.b}]:[];
+  c.data.datasets[2].data=(p.hxy||[]).map(q=>({x:q[0],y:q[1]}));
+  c.update();return r;
+}
+const rtxt=(r,m)=>r?`추세선 기울기 = ${r.k.toFixed(4)} ${SENSORS[m.y].unit}/${SENSORS[m.x].unit}`+(m.ohm&&r.k?` → 저항 R = 1/기울기 ≈ ${(1/r.k).toFixed(2)} Ω`:''):'';
+function toggleXY(){
+  D=null;$('ov').style.display='none';
+  const a=$('xw').style.display=='none';$('xw').style.display=a?'':'none';$('tw').style.display=a?'none':'';
+  if(a&&xc){xc.resize();xyUpd()}
+}
+function xyUpd(){if(!xc)return;$('xt').textContent=rtxt(fillXY(xc,cur(),S.mode.xy),S.mode.xy)}
+
+/* ---------- 전체 조 화면 (조별 보기 / 겹쳐 보기) ---------- */
+let dch={},gd={},dtimer=null,dfrom='s-group',ovc=null,ovOn=false,dxy=false;
+function dash(from){stopRec();dfrom=from;dxy=!!S.mode.xy;drawDash()}
+function drawDash(){
+  const m=S.mode,ids=m.sensors;ovOn=false;if(ovc){ovc.destroy();ovc=null}
+  $('s-dash').innerHTML=nav('closeDash()',`<h2 style="margin:0">🖥️ ${S.exp.title} › ${m.title} · ${S.cls}반</h2><span>`
+   +(m.xy?`<button style="background:#9333ea" onclick="dxy=!dxy;drawDash()">🔁 ${dxy?'시간 그래프':SENSORS[m.xy.x].name+'-'+SENSORS[m.xy.y].name+' 그래프'}로 보기</button>`:'')
+   +(!dxy&&ids.length>1?`<select id="ovs" onchange="renderOv()" style="font-size:1rem;padding:6px">${ids.map(i=>`<option value="${i}">${SENSORS[i].name}</option>`).join('')}</select>`:`<input type="hidden" id="ovs" value="${ids[0]}">`)
+   +`<button style="background:#7c3aed" onclick="toggleOv()">🔀 겹쳐 보기</button><button onclick="loadDash()">🔄 새로고침</button></span>`)
+   +`<div id="dgrid"></div><div id="ovw" style="display:none;height:calc(100vh - 130px);position:relative"><canvas id="ovc"></canvas></div>`;
+  show('s-dash');dch={};
+  for(let g=1;g<=S.nG;g++){
+    $('dgrid').insertAdjacentHTML('beforeend',`<div class="dc"><b>📌 ${g}조</b> <span id="ds-${g}" style="font-size:.8rem;color:#64748b">미제출</span><div style="position:relative;height:calc(100% - 24px)"><canvas id="dc-${g}"></canvas></div></div>`);
+    dch[g]=dxy?mkXY($('dc-'+g),m.xy.x,m.xy.y,true):mkChart($('dc-'+g),ids,true);
+  }
+  loadDash();clearInterval(dtimer);dtimer=setInterval(loadDash,5000);
+}
+function toggleOv(){ovOn=!ovOn;$('dgrid').style.display=ovOn?'none':'';$('ovw').style.display=ovOn?'':'none';renderOv()}
+function renderOv(){
+  if(!ovOn)return;if(ovc)ovc.destroy();
+  const f={size:16,weight:'bold'},gs=Object.keys(gd).sort((a,b)=>a-b);let ds=[],xt,yt,sx={},sy={};
+  if(dxy){
+    const m=S.mode.xy,X=SENSORS[m.x],Y=SENSORS[m.y];xt=`${X.name} (${X.unit})`;yt=`${Y.name} (${Y.unit})`;
+    sx={suggestedMin:X.min,suggestedMax:X.max};sy={suggestedMin:Y.min,suggestedMax:Y.max};
+    gs.forEach(g=>{
+      const c=PAL[(g-1)%PAL.length],P=xyPts(gd[g],m),r=reg(P);
+      ds.push({label:`${g}조`+(m.ohm&&r&&r.k?` (R≈${(1/r.k).toFixed(1)}Ω)`:''),data:P,backgroundColor:c,pointRadius:4});
+      if(r)ds.push({label:'',showLine:true,data:[{x:r.x0,y:r.k*r.x0+r.b},{x:r.x1,y:r.k*r.x1+r.b}],borderColor:c,pointRadius:0,borderWidth:2});
+    });
+  }else{
+    const id=$('ovs').value,s=SENSORS[id];xt='시간 (초)';yt=`${s.name} (${s.unit})`;sx={min:0};sy={suggestedMin:s.min,suggestedMax:s.max};
+    ds=gs.map(g=>({label:g+'조',showLine:true,borderColor:PAL[(g-1)%PAL.length],backgroundColor:PAL[(g-1)%PAL.length],pointRadius:2,borderWidth:3,spanGaps:true,data:(gd[g].t||[]).map((t,j)=>({x:t,y:(gd[g].d[id]||[])[j]}))}));
+  }
+  ovc=new Chart($('ovc'),{type:'scatter',data:{datasets:ds},options:{responsive:true,maintainAspectRatio:false,animation:false,
+    plugins:{legend:{labels:{font:{size:16},filter:i=>i.text!==''}}},scales:{x:{type:'linear',...sx,title:{display:true,text:xt,font:f}},y:{type:'linear',...sy,title:{display:true,text:yt,font:f}}}}});
+}
+async function loadDash(){
+  const g=JSON.parse(LS(`sc_${key()}-${S.cls}`)||'{}');
+  if(APPS_SCRIPT_URL){try{const r=await(await fetch(`${APPS_SCRIPT_URL}?action=getDashboard&topic=${encodeURIComponent(key())}&classNum=${S.cls}`)).json();Object.assign(g,r.groups||{})}catch(e){}}
+  gd=g;
+  for(let i=1;i<=S.nG;i++){
+    const r=g[i];
+    if(r&&r.t&&r.t.length&&dch[i]){$('ds-'+i).textContent=`✅ ${r.t.length}점`;$('ds-'+i).style.color='#16a34a';dxy?fillXY(dch[i],r,S.mode.xy):fill(dch[i],r,S.mode.sensors)}
+  }
+  renderOv();
+}
+function closeDash(){clearInterval(dtimer);show(dfrom)}
+
+home();
+</script>
+</body>
+</html>
