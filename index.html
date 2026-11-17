@@ -41,7 +41,7 @@ button:hover{filter:brightness(.92)}button.g{background:#64748b}
    ===================================================================== */
 const DEFAULT_CLASSES = 11;   // 끝반 번호
 const DEFAULT_GROUPS  = 7;    // 조 개수
-const APPS_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbyX9aGhuIHN8uJ6TM4SdkOEGqCOb9OplXtxkAEhZgFeKjEnCg5gFYX9uS5Mk9yqs5qnxA/exec";   // 앱스 스크립트 웹앱 주소(여러 기기 간 기록 공유). 비워두면 이 기기에만 저장
+const APPS_SCRIPT_URL = "";   // 앱스 스크립트 웹앱 주소(여러 기기 간 기록 공유). 비워두면 이 기기에만 저장
 const ADMIN_HASH = "286aee2ea4a5ba67539432dc5ea3865c3b204d3caaccb662995388d156a279cf"; // 편집자 암호의 해시
 
 /* =====================================================================
@@ -159,62 +159,89 @@ function decode(f,id){
     return{k:'?',b:[...b]};
   }catch(e){return{k:'?'}}
 }
+const POLL_MS=400;   // 읽기 요청 간격(ms). 너무 빠르면 센서 2개 이상일 때 태블릿 블루투스가 혼잡해져 끊길 수 있음
+let busy=0,Qp=Promise.resolve();
+const gq=fn=>{const p=Qp.then(fn);Qp=p.catch(()=>{});return p};   // 모든 센서의 블루투스 작업을 한 줄로 세워 동시에 실행되지 않게 함
+const setV=(id,t)=>{const e=$('v-'+id);if(e)e.textContent=t}, setH=(id,t)=>{const e=$('h-'+id);if(e)e.textContent=t};
+const send=(c,b,noResp)=>gq(()=>Promise.race([(async()=>{const w=c.wr;try{if(noResp&&w.writeValueWithoutResponse)await w.writeValueWithoutResponse(b);else await(w.writeValueWithResponse?w.writeValueWithResponse(b):w.writeValue(b))}catch(e){log('전송 오류: '+e.message)}})(),sleep(3000)]));
+function mkNote(c){
+  const id=c.id;
+  return e=>{
+    c.heard++;c.last=Date.now();const d=e.target.value;let t='';
+    for(let i=0;i<d.byteLength;i++)t+=String.fromCharCode(d.getUint8(i));
+    if(c.heard<=3)log('📥 '+t);
+    c.buf+=t;
+    for(;;){   // 20글자짜리 패킷 단위로 자르기
+      const i=c.buf.indexOf('{{');if(i<0){c.buf=c.buf.slice(-1);break}
+      if(c.buf.length-i<20)break;
+      const f=c.buf.slice(i,i+20);
+      if(f.slice(18)!='}}'){c.buf=c.buf.slice(i+2);continue}
+      c.buf=c.buf.slice(i+20);
+      const r=decode(f,id);
+      if(r.k=='serial'&&!c.step){c.step=1;log(SENSORS[id].name+' 센서 인식 완료');setTimeout(()=>{if(!busy&&!c.stopped)send(c,READ,false)},150)}
+      else if(r.k=='data'){
+        if(c.got++<5)log('✅ 측정값 '+r.v+'  ← 원본 '+f);
+        c.step=2;live[id]=r.v;setV(id,r.v+' '+SENSORS[id].unit);setH(id,'');const cd=$('c-'+id);if(cd)cd.classList.add('ok');
+        if(f[2]=='d')setTimeout(()=>{if(!busy&&!c.stopped)send(c,READ,false)},POLL_MS);   // 응답을 받으면 잠시 뒤 다음 읽기 요청
+      }else if(r.k!='serial')log('수신 '+f+(r.b?' / 해석불가 '+r.b:''));
+    }
+  };
+}
+async function link(c){   // 연결 → 통로 찾기 → 알림 구독 → 깨우기 (처음 연결과 자동 재연결에 공통 사용)
+  const{dev,id}=c;c.n=0;
+  let srv;for(let i=0;i<3;i++){try{srv=await dev.gatt.connect();break}catch(e){log('재시도 '+(i+1)+': '+e.message);if(i==2)throw e;await sleep(800)}}
+  setV(id,'서비스 찾는 중...');await sleep(300);
+  const svc=await srv.getPrimaryService(SC.svc);
+  c.nt=await svc.getCharacteristic(SC.nt);c.wr=await svc.getCharacteristic(SC.wr);
+  c.step=0;c.buf='';c.last=0;
+  c.noteFn=c.noteFn||mkNote(c);c.nt.addEventListener('characteristicvaluechanged',c.noteFn);
+  await c.nt.startNotifications();
+  setV(id,'센서 깨우는 중...');send(c,INIT,false);
+}
+function tickPoll(c){
+  if(c.stopped||busy||!c.dev.gatt.connected)return;
+  c.n++;
+  if(Date.now()-c.last>1200)send(c,c.step?READ:INIT,!c.step&&c.n%2==0);   // 응답이 끊기면 다시 요청
+  if(live[c.id]==null){
+    setV(c.id,`센서 깨우는 중... ${c.n}초`);
+    if(c.n==8)setH(c.id,c.heard?'센서는 응답하지만 값이 오지 않아요. 아래 [로그 복사] 내용을 선생님께 보여 주세요.':'센서 응답이 없어요. ① 센서 전원을 껐다 켠 뒤 다시 연결 ② 다른 창·앱에서 이 센서를 연결 중이면 끊기 ③ 기기 블루투스 설정에 센서가 등록돼 있으면 삭제 후 재연결');
+  }
+}
+async function reconnect(c){   // 연결이 끊기면 자동으로 최대 5번 다시 연결
+  const id=c.id;if(c.stopped||conns[id]!==c)return;
+  live[id]=null;const cd=$('c-'+id);if(cd)cd.classList.remove('ok');
+  log(SENSORS[id].name+' 연결이 끊어졌어요 → 자동으로 다시 연결합니다');
+  for(let i=1;i<=5&&!c.stopped;i++){
+    setV(id,`다시 연결 중... (${i}/5)`);await sleep(1200*i);
+    while(busy&&!c.stopped)await sleep(500);
+    if(c.stopped)return;
+    busy++;
+    try{await link(c);log('재연결 성공');return}catch(e){log('재연결 실패: '+e.message)}finally{busy--}
+  }
+  setV(id,'연결 끊김');setH(id,'자동 재연결에 실패했어요. [블루투스 연결]을 다시 눌러 주세요.');
+}
 async function pair(id){
   if(!navigator.bluetooth)return alert('이 브라우저는 블루투스를 지원하지 않아요.\n크롬(Chrome) 브라우저로 열어 주세요.');
-  const V=t=>{const e=$('v-'+id);if(e)e.textContent=t},H=t=>{const e=$('h-'+id);if(e)e.textContent=t};
+  busy++;   // 연결하는 동안 다른 센서의 읽기 요청을 잠시 멈춤(기존 센서가 끊기는 것 방지)
   try{
     const o={optionalServices:[SC.svc]};
     if($('all')&&$('all').checked)o.acceptAllDevices=true;
     else o.filters=[{namePrefix:'SC'},{namePrefix:'Smart'},{namePrefix:'KD'},{namePrefix:'Science'},{services:[SC.svc]}];
     const dev=await navigator.bluetooth.requestDevice(o);
+    const dup=Object.keys(conns).find(k=>k!=id&&conns[k].dev.id==dev.id);
+    if(dup)throw new Error('이미 '+SENSORS[dup].name+' 센서로 연결된 기기예요. 다른 센서를 선택해 주세요.');
     if(conns[id])conns[id].stop();
-    H('');V('연결 중...');log(`${dev.name} 연결 중...`);
-    let srv;for(let i=0;i<3;i++){try{srv=await dev.gatt.connect();break}catch(e){log('재시도 '+(i+1));if(i==2)throw e;await sleep(700)}}
-    V('서비스 찾는 중...');
-    const svc=await srv.getPrimaryService(SC.svc),nt=await svc.getCharacteristic(SC.nt),wr=await svc.getCharacteristic(SC.wr);
-    let step=0,buf='',n=0,heard=0,last=0,got=0;
-    const send=async(b,noResp)=>{try{if(noResp&&wr.writeValueWithoutResponse)await wr.writeValueWithoutResponse(b);else await(wr.writeValueWithResponse?wr.writeValueWithResponse(b):wr.writeValue(b))}catch(e){log('전송 오류: '+e.message)}};
-    const onNote=e=>{
-      heard++;last=Date.now();const d=e.target.value;let c='';
-      for(let i=0;i<d.byteLength;i++)c+=String.fromCharCode(d.getUint8(i));
-      if(heard<=3)log('📥 '+c);
-      buf+=c;
-      for(;;){   // 20글자짜리 패킷 단위로 자르기
-        const i=buf.indexOf('{{');if(i<0){buf=buf.slice(-1);break}
-        if(buf.length-i<20)break;
-        const f=buf.slice(i,i+20);
-        if(f.slice(18)!='}}'){buf=buf.slice(i+2);continue}
-        buf=buf.slice(i+20);
-        const r=decode(f,id);
-        if(r.k=='serial'&&!step){step=1;log('센서 인식 완료 '+f);setTimeout(()=>send(READ,false),150)}
-        else if(r.k=='data'){
-          if(got++<5)log('✅ 측정값 '+r.v+'  ← 원본 '+f);
-          step=2;live[id]=r.v;V(r.v+' '+SENSORS[id].unit);H('');const cd=$('c-'+id);if(cd)cd.classList.add('ok');
-          if(f[2]=='d')setTimeout(()=>send(READ,false),120);   // 공식 사이트처럼 응답을 받으면 곧바로 다음 읽기 요청
-        }else if(r.k!='serial')log('수신 '+f+(r.b?' / 해석불가 '+r.b:''));
-      }
-    };
-    log(`통로: 알림[${Object.keys(nt.properties).filter(k=>nt.properties[k])}] 쓰기[${Object.keys(wr.properties).filter(k=>wr.properties[k])}]`);
-    nt.addEventListener('characteristicvaluechanged',onNote);
-    await nt.startNotifications();
-    V('센서 깨우는 중...');send(INIT,false);
-    const poll=setInterval(()=>{
-      n++;
-      if(Date.now()-last>900)send(step?READ:INIT,!step&&n%2==0);   // 응답이 끊기면 다시 요청(번갈아 쓰기 방식도 시도)
-      if(live[id]==null){
-        V(`센서 깨우는 중... ${n}초`);
-        if(n==8)H(heard?'센서는 응답하지만 값이 오지 않아요. 아래 검은 창 내용을 선생님께 보여 주세요.':'센서 응답이 없어요. ① 센서 전원을 껐다 켠 뒤 다시 연결 ② 다른 창·앱에서 이 센서를 연결 중이면 끊기 ③ 윈도우 설정>블루투스에 센서가 등록돼 있으면 [장치 제거] 후 재연결');
-      }
-    },1000);
-    dev.addEventListener('gattserverdisconnected',()=>{
-      if(!conns[id]||conns[id].dev!==dev)return;
-      clearInterval(poll);live[id]=null;V('연결 끊김 (다시 연결)');const cd=$('c-'+id);if(cd)cd.classList.remove('ok');log(SENSORS[id].name+' 연결이 끊어졌어요');
-    });
-    conns[id]={dev,stop:()=>{clearInterval(poll);if(dev.gatt.connected)dev.gatt.disconnect()}};
+    setH(id,'');setV(id,'연결 중...');log(`${dev.name} 연결 중...`);
+    const c={id,dev,stopped:false,step:0,buf:'',n:0,heard:0,last:0,got:0,nt:null,wr:null,poll:null};
+    c.stop=()=>{c.stopped=true;clearInterval(c.poll);if(dev.gatt.connected)dev.gatt.disconnect()};
+    await link(c);
+    conns[id]=c;
+    c.poll=setInterval(()=>tickPoll(c),1000);
+    dev.addEventListener('gattserverdisconnected',()=>reconnect(c));
   }catch(e){
-    log('연결 실패: '+e.name+' - '+e.message);V('연결 대기');
+    log('연결 실패: '+e.name+' - '+e.message);setV(id,'연결 대기');
     alert(e.name=='NotFoundError'?'선택된 기기가 없어요.\n① 센서 전원이 켜져 있는지 ② "센서가 목록에 안 보이면 체크"를 켜 보세요.':'블루투스 연결 실패: '+e.message);
-  }
+  }finally{busy--}
 }
 
 /* ---------- 그래프 ---------- */
